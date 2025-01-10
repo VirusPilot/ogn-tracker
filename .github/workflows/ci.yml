@@ -42,8 +42,8 @@ jobs:
         path: |
          .pio/build/ttgo-sx1276-tbeam-07/*.bin
          .pio/build/ttgo-sx1276-tbeam-v10/*.bin
-         .pio/build/ttgo-sx1272-tbeam-v10/*.bin
+         .pio/build/ttgo-sx1262-tbeam-v10/*.bin
          .pio/build/ttgo-sx1276-tbeam-v12/*.bin
-         .pio/build/ttgo-sx1272-tbeam-v12/*.bin
+         .pio/build/ttgo-sx1262-tbeam-v12/*.bin
          .pio/build/ttgo-sx1262-tbeam-s3-ubx/*.bin
         if-no-files-found: error
