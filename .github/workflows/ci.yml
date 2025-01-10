@@ -1,0 +1,49 @@
+name: PlatformIO CI
+
+on:
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - '**.md'
+      - '**.yml'
+  workflow_dispatch:
+  
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.x'
+
+    - name: Install PlatformIO CLI
+      run: |
+        python -m pip install --upgrade pip
+        pip install platformio
+
+    - name: Build project
+      run: |
+        platformio run -e ttgo-sx1276-tbeam-07
+        platformio run -e ttgo-sx1276-tbeam-v10
+        platformio run -e ttgo-sx1272-tbeam-v10
+        platformio run -e ttgo-sx1276-tbeam-v12
+        platformio run -e ttgo-sx1272-tbeam-v12
+        platformio run -e ttgo-sx1262-tbeam-s3-ubx
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ogn-tracker
+        path: |
+         .pio/build/ttgo-sx1276-tbeam-07/*.bin
+         .pio/build/ttgo-sx1276-tbeam-v10/*.bin
+         .pio/build/ttgo-sx1272-tbeam-v10/*.bin
+         .pio/build/ttgo-sx1276-tbeam-v12/*.bin
+         .pio/build/ttgo-sx1272-tbeam-v12/*.bin
+         .pio/build/ttgo-sx1262-tbeam-s3-ubx/*.bin
+        if-no-files-found: error
