@@ -31,9 +31,9 @@ jobs:
       run: |
         platformio run -e ttgo-sx1276-tbeam-07
         platformio run -e ttgo-sx1276-tbeam-v10
-        platformio run -e ttgo-sx1272-tbeam-v10
+        platformio run -e ttgo-sx1262-tbeam-v10
         platformio run -e ttgo-sx1276-tbeam-v12
-        platformio run -e ttgo-sx1272-tbeam-v12
+        platformio run -e ttgo-sx1262-tbeam-v12
         platformio run -e ttgo-sx1262-tbeam-s3-ubx
 
     - uses: actions/upload-artifact@v4
