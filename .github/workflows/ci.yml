@@ -47,3 +47,4 @@ jobs:
          .pio/build/ttgo-sx1262-tbeam-v12/*.bin
          .pio/build/ttgo-sx1262-tbeam-s3-ubx/*.bin
         if-no-files-found: error
+        retention-days: 7
