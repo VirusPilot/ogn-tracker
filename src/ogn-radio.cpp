@@ -786,8 +786,10 @@ void Radio_Task(void *Parms)
       Radio_TxPAW(*PawPacket); }
 #endif
     const OGN_TxPacket<OGN_Packet> *OgnPacket1 = OGN_TxFIFO.getRead();   // 1st OGN packet (possibly NULL)
+    //const OGN_TxPacket<OGN_Packet> *OgnPacket1 = NULL;   // disable OGN
     if(OgnPacket1) OGN_TxFIFO.Read();
     const OGN_TxPacket<OGN_Packet> *OgnPacket2 = OGN_TxFIFO.getRead();   // 2nd OGN packet (possibly NULL)
+    //const OGN_TxPacket<OGN_Packet> *OgnPacket2 = NULL;   // disable OGN
     if(OgnPacket2) { OGN_TxFIFO.Read(); if(Random.RX&4) Swap(OgnPacket1, OgnPacket2); }  // randomly swap
               else { OgnPacket2=OgnPacket1; }                                            // or 2nd = 1st
     // if(OgnPacket1) Serial.printf("OGN-1 for TX\n");
