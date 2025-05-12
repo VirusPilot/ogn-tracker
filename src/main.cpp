@@ -14,6 +14,8 @@
 
 #include "main.h"
 
+#include "esp_core_dump.h"
+
 #ifdef WITH_BT4_SPP
 #include "bt4.h"
 #endif
@@ -50,6 +52,8 @@
 #include <esp_sleep.h>
 #include "Button2.h"
 #endif
+
+// #include "driver/temperature_sensor.h"  // internal ESP32 temperature sensor
 
 #include "oled.h"
 
@@ -232,7 +236,7 @@ static void TFT_DrawID(bool WithAP)
   uint8_t Len=Format_String(Line, "#");
   Len+=Format_Hex(Line+Len, (uint16_t)(ID>>32));
   Len+=Format_Hex(Line+Len, (uint32_t)ID);
-  Len+=Format_String(Line+Len, " v"STR(VERSION));
+  Len+=Format_String(Line+Len, " v"VERSION);
   Line[Len]=0;
   TFT.setFont(0);
   TFT.setTextSize(1);
@@ -411,6 +415,56 @@ int  CONS_UART_Read (uint8_t &Byte)
 
 // =======================================================================================================
 
+#ifdef GPS_PinPPS
+uint32_t PPS_Intr_msTime = 0;   // [ms] xTaskGetTickCount() counter at the time of the PPS
+uint32_t PPS_Intr_usTime = 0;   // [us] micros() counter at the time of the PPS
+
+uint32_t PPS_usPrecTime  = 0;   // [1/16us] precise time of the PPS
+uint32_t PPS_usTimeRMS   = 0;   // [1/4us]  precise PPS time residue time error RMS
+
+uint32_t PPS_Intr_usFirst= 0;   // [us] micros() counter at the first interrupt in a series
+uint32_t PPS_Intr_Count  = 0;   // [count] good PPS interrupts in the series
+uint32_t PPS_Intr_Missed = 0;   // [count] missed PPS interrupts
+
+ int32_t PPS_usPeriodErr = 0;   // [1/16us] PPS period average systematic error
+uint32_t PPS_usPeriodRMS = 0;   // [(1/4us)^2] mean square of statistical error
+
+const uint32_t PPS_usPeriod = 1000000;  // [usec] expected PPS period = 1sec = 10000000usec
+
+static void IRAM_ATTR PPS_Intr(void *Context)
+{ uint32_t usTime = micros();                                     // [usec] usec-clock at interrupt time
+  uint32_t msTime = xTaskGetTickCount();                          // [msec] mses-clock at interrupt time
+  uint32_t usDelta = usTime - PPS_Intr_usTime;                    // difference from the previous PPS
+  PPS_Intr_usTime = usTime;                                       // [usec]
+  PPS_Intr_msTime = msTime;                                       // [ms]
+  uint32_t Cycles = (usDelta+PPS_usPeriod/2)/PPS_usPeriod;        // how many PPS periods past
+   int32_t usResid = usDelta-Cycles*PPS_usPeriod;                 // [usec]
+  if(Cycles>0 && Cycles<=10 && abs(usResid)<Cycles*500)           // condition to accept the PPS edge
+  { int32_t ResidErr = (usResid<<4)-PPS_usPeriodErr;              // [1/16us]
+    if(Cycles>1) ResidErr/=Cycles;
+    PPS_usPeriodErr += (ResidErr+8)>>4;                         // [1/16us] average the PPS period error
+    uint32_t ErrSqr = ResidErr*ResidErr;
+    if(PPS_Intr_Count)                                            // if not the first edge in the series
+    { PPS_usPrecTime += ((PPS_usPeriod<<4)+PPS_usPeriodErr)*Cycles;  // [1/16us] forcast the PPS time to the current PPS
+      PPS_usPeriodRMS += ((int32_t)((ErrSqr>>4)-PPS_usPeriodRMS)+8)>>4;
+      int32_t usTimeErr = (usTime<<4)-PPS_usPrecTime;                // [1/16us] difference between current PPs and the forecast
+      PPS_usPrecTime += (usTimeErr+8)>>3;                            // [1/16us]
+      uint32_t ErrSqr = usTimeErr*usTimeErr;
+      PPS_usTimeRMS += ((int32_t)((ErrSqr>>4)-PPS_usTimeRMS)+8)>>4; }
+    else                                                          // if this was the very first edge in the series
+    { PPS_usPrecTime  = PPS_Intr_usTime<<4;
+      PPS_usTimeRMS   = 4<<4;
+      PPS_usPeriodErr = ResidErr;
+      PPS_usPeriodRMS = 4<<4; }                                   // set statistical error RMS to 2 usec
+    PPS_Intr_Count += Cycles;
+    PPS_Intr_Missed+= Cycles-1; }                                 // count PPS cycles
+  else                                                            // if edge is not accepted
+  { PPS_Intr_Count=0;                                             // then we start all from scratch
+    PPS_Intr_Missed=0;
+    PPS_Intr_usFirst= usTime; }
+}
+#endif
+
 // move to the specific pin-defnition file
 // #define GPS_UART    UART_NUM_1      // UART for GPS
 // const int GPS_PinTx  = GPIO_NUM_12;
@@ -419,6 +473,7 @@ int  CONS_UART_Read (uint8_t &Byte)
 
 int   GPS_UART_Full         (void)          { size_t Full=0; uart_get_buffered_data_len(GPS_UART, &Full); return Full; }
 int   GPS_UART_Read         (uint8_t &Byte) { return uart_read_bytes  (GPS_UART, &Byte, 1, 0); }  // should be buffered and non-blocking
+int   GPS_UART_Read(uint8_t *Data, int Max) { return uart_read_bytes  (GPS_UART, Data, Max, 0); }
 void  GPS_UART_Write        (char     Byte) {        uart_write_bytes (GPS_UART, &Byte, 1);    }  // should be buffered and blocking
 void  GPS_UART_Flush        (int MaxWait  ) {        uart_wait_tx_done(GPS_UART, MaxWait);     }
 void  GPS_UART_SetBaudrate  (int BaudRate ) {        uart_set_baudrate(GPS_UART, BaudRate);    }
@@ -434,7 +489,16 @@ void GPS_ENABLE (void) { gpio_set_level((gpio_num_t)GPS_PinEna, 1); }
 static void GPS_UART_Init(int BaudRate=9600)
 {
 #ifdef GPS_PinPPS
-  gpio_set_direction((gpio_num_t)GPS_PinPPS, GPIO_MODE_INPUT);
+  // gpio_set_direction((gpio_num_t)GPS_PinPPS, GPIO_MODE_INPUT);
+  gpio_config_t PinConf = { };
+  PinConf.intr_type    = GPIO_INTR_POSEDGE;    // Interrupt on rising edge
+  PinConf.mode         = GPIO_MODE_INPUT;      // Set as input
+  PinConf.pin_bit_mask = (1ULL << GPS_PinPPS); // Select pin
+  PinConf.pull_down_en = (gpio_pulldown_t)0;   // Disable pull-down
+  PinConf.pull_up_en   = (gpio_pullup_t)0;     // Disable pull-up
+  gpio_config(&PinConf);
+  gpio_install_isr_service(0);                 // default flags, but what could it be ?
+  gpio_isr_handler_add((gpio_num_t)GPS_PinPPS, PPS_Intr, 0);   // the last arg. is context which can be passed to the interrupt handl$#endif
 #endif
 #ifdef GPS_PinEna
   gpio_set_direction((gpio_num_t)GPS_PinEna, GPIO_MODE_OUTPUT);
@@ -452,8 +516,8 @@ static void GPS_UART_Init(int BaudRate=9600)
   uart_param_config  (GPS_UART, &GPS_UART_Config);
   uart_set_pin       (GPS_UART, GPS_PinTx, GPS_PinRx, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 
-  uart_driver_install(GPS_UART, 256, 256, 0, 0, 0);
-  uart_set_rx_full_threshold(GPS_UART, 16); }
+  uart_driver_install(GPS_UART, 512, 512, 0, 0, 0);
+  uart_set_rx_full_threshold(GPS_UART, 32); }
 
 // =======================================================================================================
 
@@ -506,14 +570,20 @@ void setup()
   if(Parameters.CONbaud<2400 || Parameters.CONbaud>921600 || Parameters.CONbaud%2400)
   { Parameters.CONbaud=115200; Parameters.WriteToNVS(); }
 
+#ifdef HARD_NAME
+  strcpy(Parameters.Hard, HARD_NAME);
+#endif
+#ifdef SOFT_NAME
+  strcpy(Parameters.Soft, SOFT_NAME);
+#endif
+
 #ifdef ARDUINO_USB_MODE
   Serial.setTxTimeoutMs(0);                  // to prevent delays and blocking of threads which send data to the USB console
 #endif
   Serial.begin(Parameters.CONbaud);          // USB Console: baud rate probably does not matter here
   GPS_UART_Init();
 
-  Serial.println("OGN-Tracker");
-  // Serial.printf("RFM: CS:%d IRQ:%d RST:%d\n", LORA_CS, LORA_IRQ, LORA_RST);
+  Serial.printf("OGN-Tracker: Hard:%s Soft:%s\n", Parameters.Hard, Parameters.Soft);
 
 #ifdef WITH_ST7735
   TFT_SPI.begin(TFT_PinSCK, -1, TFT_PinMOSI);
@@ -673,6 +743,21 @@ void setup()
   Serial.printf(" %d devices\n", I2Cdev);
 */
 
+  char Info[512];
+  int InfoLen=0;
+  esp_core_dump_init();
+  esp_core_dump_summary_t *DumpSummary = (esp_core_dump_summary_t *)malloc(sizeof(esp_core_dump_summary_t));
+  if(DumpSummary)
+  { esp_err_t Err = esp_core_dump_get_summary(DumpSummary);
+    if (Err==ESP_OK)
+    { esp_core_dump_bt_info_t &BackTrace = DumpSummary->exc_bt_info;
+      InfoLen=sprintf(Info, "Crash-dump: Task:%s PC:%08x [%d]\n", DumpSummary->exc_task, DumpSummary->exc_pc, BackTrace.depth);
+      for(uint32_t Idx=0; Idx<BackTrace.depth && Idx<16; Idx++)
+      { InfoLen+=sprintf(Info+InfoLen, " %08x", BackTrace.bt[Idx]); }
+    }
+    free(DumpSummary); }
+  if(InfoLen) Serial.println(Info);
+
 #ifdef WITH_AP                    // with WiFi Access Point
 #ifdef WITH_AP_BUTTON
     bool StartAP = Button_isPressed() && Parameters.APname[0]; // start WiFi AP when button pressed during startup and APname non-empty
@@ -709,7 +794,9 @@ void setup()
 #endif
 
 #ifdef WITH_BLE_SPP
-  if(!StartAP) BLE_SPP_Start(Parameters.BTname);
+  if(!StartAP && ameters.BTname[0])
+  { Serial.printf("Start BLE (Arduino) Serial Port: %s\n", Parameters.BTname);
+    BLE_SPP_Start(Parameters.BTname); }
 #endif
 
 #ifdef WITH_OLED
@@ -739,7 +826,7 @@ void setup()
   xTaskCreate(vTaskSENS   ,  "SENS" ,  3000, NULL, 1, NULL);  // read data from pressure sensor
 #endif
   xTaskCreate(vTaskPROC   ,  "PROC" ,  3000, NULL, 0, NULL);  // process received packets, prepare packets for transmission
-  xTaskCreate(Radio_Task  ,  "RF"   ,  3000, NULL, 2, NULL);  // transmit/receive packets
+  xTaskCreate(Radio_Task  ,  "RF"   ,  3000, NULL, 1, NULL);  // transmit/receive packets
 #ifdef WITH_AP
   if(StartAP)
     xTaskCreate(vTaskAP,  "AP",  3000, NULL, 0, NULL);

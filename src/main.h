@@ -11,7 +11,11 @@ uint32_t getUniqueAddress(void);
 #define STR(macro) QUOTE(macro)
 
 #ifndef VERSION
-#define VERSION 0.1.9
+#define VERSION "0.1.10"
+#endif
+
+#ifndef SOFT_NAME
+#define SOFT_NAME "OGNv" VERSION
 #endif
 
 #define HARDWARE_ID 0x04
@@ -92,14 +96,30 @@ int  CONS_UART_Free       (void);          // how many bytes can be written to t
 
 int   GPS_UART_Full         (void);
 int   GPS_UART_Read         (uint8_t &Byte);
+int   GPS_UART_Read(uint8_t *Data, int Max);
 void  GPS_UART_Write        (char     Byte);
 void  GPS_UART_Flush        (int MaxWait  );
 void  GPS_UART_SetBaudrate  (int BaudRate );
+
 #ifdef GPS_PinPPS
 bool  GPS_PPS_isOn();
+
+extern uint32_t PPS_Intr_usTime;   // [us] micros() counter at the time of the PPS
+extern uint32_t PPS_Intr_msTime;   // [ms] millis() counter at the time of the PPS
+
+extern uint32_t PPS_usPrecTime;
+extern uint32_t PPS_usTimeRMS;
+
+extern uint32_t PPS_Intr_usFirst;  // [us] the time of the first interrupt in a series
+extern uint32_t PPS_Intr_Count;    // [count] of good PPS interrupts in the series
+extern uint32_t PPS_Intr_Missed;   // [count] of missed PPS interrupts
+
+extern  int32_t PPS_usPeriodErr;   // [1/16us] PPS period systematic error
+extern uint32_t PPS_usPeriodRMS;   // [ ]
 #else
 inline bool  GPS_PPS_isOn() { return 0; }
 #endif
+
 #ifdef GPS_PinEna
 void GPS_ENABLE(void);
 void GPS_DISABLE(void);
