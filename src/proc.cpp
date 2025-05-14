@@ -191,24 +191,66 @@ template <class Type>
   if(X>Upp) return Upp;
   return X; }
 
-static void ReadStatus(ADSL_Packet &Packet, const GPS_Position &GPS)
+static int getTelemSatPPS(ADSL_Packet &Packet)
 { Packet.Init(0x42);
   Packet.setAddress    (Parameters.Address);
   Packet.setAddrTypeOGN(Parameters.AddrType);
   Packet.setRelay(0);
-  Packet.Telemetry.Header.TelemType=0x00;
-  uint16_t BattVolt = BatterySense();                                        // [mV] measure battery voltage
-  // GPS.EncodeTelemetry(Packet);
-  // uint8_t SNR = (GPS_SatSNR+2)/4;                                   // encode number of satellites and SNR in the Status packet
-  // if(SNR>10) { SNR-=10; if(SNR>31) SNR=31; }
-  //       else { SNR=0; }
-  // Packet.Telemetry.GPS.SNR=SNR;
+  Packet.Telemetry.Header.TelemType=0x3;                            // 3 = GPS telemetry
+  Packet.SatSNR.Header.GNSStype=1;                                  // 1 = GPS PPS monitor
+  if(PPS_Intr_Count==0) return 0;
+  uint32_t msTime = xTaskGetTickCount();                            // [ms] current sys-time
+  uint32_t PPSage = msTime-PPS_Intr_msTime;                         // [ms] how old the last PPS is
+  if(PPSage>20000) return 0;
+  uint32_t UTC = GPS_TimeSync.UTC;
+  uint32_t UTCage = msTime-GPS_TimeSync.sysTime;                    // [ms] time synce last ref. UTC
+  PPSage -= UTCage;                                                 //
+  PPSage += 500;
+  Packet.SatPPS.Data.UTC = UTC - PPSage/1000;                       // [sec] the UTC time of the 
+  Packet.SatPPS.Data.ClockTime = msTime-PPS_usPrecTime;             //
+  Packet.SatPPS.Data.ClockTimeRMS = Limit(IntSqrt(PPS_usTimeRMS<<4), (uint32_t)0, (uint32_t)255);
+  Packet.SatPPS.Data.RefClock = 16;                                 // [MHz]
+  Packet.SatPPS.Data.PPScount = Limit(PPS_Intr_Count, (uint32_t)0, (uint32_t)240);      // [sec]
+  int32_t FreqError = -PPS_usPeriodErr;
+  FreqError = (FreqError+8)>>4;                                     // [ppm]
+  Packet.SatPPS.Data.PPSerror = Limit(FreqError, (int32_t)-127, (int32_t)+127);
+  Packet.SatPPS.Data.PPSresid = Limit(IntSqrt(PPS_usPeriodRMS<<4), (uint32_t)0, (uint32_t)255);
+  return 1; }
+
+static void getTelemSatSNR(ADSL_Packet &Packet)
+{ Packet.Init(0x42);
+  Packet.setAddress    (Parameters.Address);
+  Packet.setAddrTypeOGN(Parameters.AddrType);
+  Packet.setRelay(0);
+  Packet.Telemetry.Header.TelemType=0x3;                            // 3 = GPS telemetry
+  Packet.SatSNR.Header.GNSStype=0;                                  // 0 = GPS satellite SNR
+  for(uint8_t Sys=0; Sys<5; Sys++)
+  { Packet.SatSNR.Data.SatSNR[Sys]=GPS_SatMon.getSysStatus(Sys); }
+  // Serial.printf("SatSNR: %04X %04X %04X %04X %04X\n",
+  //     Packet.SatSNR.Data.SatSNR[0], Packet.SatSNR.Data.SatSNR[1], Packet.SatSNR.Data.SatSNR[2], Packet.SatSNR.Data.SatSNR[3], Packet.SatSNR.Data.SatSNR[4]);
+  Packet.SatSNR.Data.Inbalance = 0;
+  Packet.SatSNR.Data.PDOP = GPS_SatMon.PDOP;
+  Packet.SatSNR.Data.HDOP = GPS_SatMon.HDOP;
+  Packet.SatSNR.Data.VDOP = GPS_SatMon.VDOP; }
+
+static void getTelemStatus(ADSL_Packet &Packet, const GPS_Position *GPS)
+{ Packet.Init(0x42);
+  Packet.setAddress    (Parameters.Address);
+  Packet.setAddrTypeOGN(Parameters.AddrType);
+  Packet.setRelay(0);
+  Packet.Telemetry.Header.TelemType=0x0;                            // 0 => device status
+  if(GPS) GPS->EncodeTelemetry(Packet);
+  uint8_t SNR = (GPS_SatSNR+2)/4;                                   // encode number of satellites and SNR in the Status packet
+  if(SNR>10) { SNR-=10; if(SNR>31) SNR=31; }
+        else { SNR=0; }
+  Packet.Telemetry.GPS.SNR=SNR;
+  uint16_t BattVolt = BatterySense();                               // [mV] measure battery voltage
   Packet.Telemetry.Battery.Voltage  = EncodeUR2V8(BattVolt/4);
-  // Packet.Telemetry.Battery.Capacity = Limit((int)floorf(BatteryCapacity*(64.0f/100)), 0, 63);
+  int BattCap = ((int)BattVolt-3200)/16;                            // approx. formula
+  Packet.Telemetry.Battery.Capacity = Limit(BattCap, 0, 63);
   Packet.Telemetry.Radio.RxNoise = Limit(120+(int)floorf(Radio_BkgRSSI+0.5), 0, 63);
   Packet.Telemetry.Radio.RxRate  = EncodeUR2V4(floorf(Radio_PktRate*4+0.5f));
-  Packet.Telemetry.Radio.TxPower = Limit(Parameters.TxPower-10, 0, 15);
-}
+  Packet.Telemetry.Radio.TxPower = Limit(Parameters.TxPower-10, 0, 15); }
 
 static void ReadStatus(OGN_Packet &Packet)
 {
@@ -766,11 +808,11 @@ void vTaskPROC(void* pvParameters)
           Packet->setAddrTypeOGN(Parameters.AddrType);
           Packet->setRelay(0);
           Packet->setAcftTypeOGN(Parameters.AcftType);
-          Position->Encode(*Packet);
+          Position->Encode(*Packet);                                           // encode position packet from the GPS
           Packet->Scramble();
           Packet->setCRC();
           ADSL_TxFIFO.Write();
-          if(AverSpeed<10 && !FloatAcft) TxBackOff += 3+(Random.RX&0x1);
+          if(AverSpeed<10 && !FloatAcft) TxBackOff += 3+(Random.RX&0x1);       // if stationary then don't transmit position every second
           if(Radio_TxCredit<=0) TxBackOff+=1; }
       }
 #endif
@@ -955,15 +997,32 @@ void vTaskPROC(void* pvParameters)
     }
     if(StatTxBackOff) StatTxBackOff--;
 
-    while(OGN_TxFIFO.Full()<2)
+    while(OGN_TxFIFO.Full()<2)                                   // any received OGN positions to be relayed ?
     { OGN_TxPacket<OGN_Packet> *RelayPacket = OGN_TxFIFO.getWrite();
       if(!GetRelayPacket(RelayPacket)) break;
       OGN_TxFIFO.Write(); }
 
-    while(ADSL_TxFIFO.Full()<2)
+#ifdef WITH_ADSL
+    { static uint8_t StatTxBackOff = 16;
+      static uint8_t StatTxPkt = 0;
+      XorShift32(Random.RX);
+      if(StatTxBackOff) StatTxBackOff--;
+      else if(ADSL_TxFIFO.Full()<2 )                    // decide whether to transmit the status/info packet
+      { ADSL_Packet *Packet = ADSL_TxFIFO.getWrite();
+        if(StatTxPkt==0) getTelemStatus(*Packet, Position);
+        else if(StatTxPkt==1) getTelemSatSNR(*Packet);
+        else if(!getTelemSatPPS(*Packet)) getTelemSatSNR(*Packet);
+        StatTxPkt++; if(StatTxPkt>=3) StatTxPkt=0;
+        Packet->Scramble();
+        Packet->setCRC();
+        ADSL_TxFIFO.Write();
+        StatTxBackOff = 10+Random.RX%5; }
+    }
+    while(ADSL_TxFIFO.Full()<2)                                  // any received ADS-L pasition to be relayed ?
     { ADSL_Packet *RelayPacket = ADSL_TxFIFO.getWrite();
       if(!GetRelayPacket(RelayPacket)) break;
       ADSL_TxFIFO.Write(); }
+#endif
 
     CleanRelayQueue(SlotTime);
 

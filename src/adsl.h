@@ -45,7 +45,7 @@ class ADSL_Packet
            uint8_t HorizAccuracy  :3; // 7=3m, 6=10m, 5=30m. 4=92.5m   <= NACp -4
            uint8_t VertAccuracy   :2; // 3=15m, 2=45m, 1=150m          <= GVA
            uint8_t VelAccuracy    :2; // 3=1m/s 2=3m/s 1=10m/s         <= NACv
-           uint8_t SpoofingDetect :1; // signal suspected GPS spoofing
+           uint8_t SpoofDet       :1; // signal suspected GPS spoofing
          } __attribute__((packed));
        } ;
      } __attribute__((packed)) ;
@@ -117,6 +117,41 @@ class ADSL_Packet
 
      } __attribute__((packed)) Flight;
 
+     struct
+     { uint8_t Type;             // 0x02=iConspicuity, bit #7 = Unicast, 0x42 = telemetry
+       uint8_t Address  [4];     // Address[30]/Reserved[1]/RelayForward[1] (not aligned to 32-bit !)
+       struct                    //
+       { uint8_t  GNSStype :6;   // 0 = Satellite SNR
+         uint8_t  TelemType:2;   // 3 = GNSS status and data
+       } __attribute__((packed)) Header;  // 1 byte
+       struct
+       { uint16_t SatSNR[5];     // SNR and sats visible and in fix for each GNSS system
+         uint8_t  Inbalance;     //
+         uint8_t  PDOP;          // [0.1]
+         uint8_t  HDOP;          // [0.1]
+         uint8_t  VDOP;          // [0.1]
+       } __attribute__((packed)) Data;
+     } __attribute__((packed)) SatSNR;
+
+     struct
+     { uint8_t Type;             // 0x02=iConspicuity, bit #7 = Unicast, 0x42 = telemetry
+       uint8_t Address  [4];     // Address[30]/Reserved[1]/RelayForward[1] (not aligned to 32-bit !)
+       struct                    //
+       { uint8_t  GNSStype :6;   // 1 = PPS timing
+         uint8_t  TelemType:2;   // 3 = GNSS status and data
+       } __attribute__((packed)) Header;  // 1 byte
+       struct
+       { uint32_t UTC;           // [sec] UTC time
+         uint32_t ClockTime;     // [ref.clock] PPS pulse timestamp
+         uint8_t  ClockTimeRMS;  // [ref.clock] RMS on usTime
+         uint8_t  RefClock;      // [MHz] ref.clock frequency
+         uint8_t  PPScount;      // [count] number of PPS pulses in a cont. series
+          int8_t  PPSerror;      // [ppm] PPS period error
+         uint8_t  PPSresid;      // [ref.clock] RNS on PPS stability
+         uint8_t  Spare;
+       } __attribute__((packed)) Data;
+     } __attribute__((packed)) SatPPS;
+
    } ;
    uint8_t CRC[3];           // 24-bit (is aligned to 32-bit)
    uint8_t Spare;            // to make the overall size a multiple of 32-bit words
@@ -148,6 +183,19 @@ class ADSL_Packet
        printf(" v%02X %4.1fs: %02X:%06X\n",
          Version, 0.25*TimeStamp, getAddrTable(), getAddress() );
    }
+
+   int PrintGNSS(char *Out) const
+   { int Len=0;
+     const char *SysName[5] = { "QZ", "GP", "GL", "GA", "BD" };
+     Len+=sprintf(Out+Len, " SatSNR:");
+     for(uint8_t Sys=0; Sys<5; Sys++)
+     { uint16_t Stat=SatSNR.Data.SatSNR[Sys];
+       uint8_t SNR = Stat&0xFF; if(SNR==0) continue;
+       uint8_t VisSats=(Stat>>8)&0xF;
+       uint8_t FixSats=Stat>>12;
+       Len+=sprintf(Out+Len, " %s:%d:%d:%3.1fdB", SysName[Sys], FixSats, VisSats, 0.25*SNR); }
+     Len+=sprintf(Out+Len, " DOP:%3.1f/%3.1f/%3.1f", 0.1*SatSNR.Data.PDOP, 0.1*SatSNR.Data.HDOP, 0.1*SatSNR.Data.VDOP);
+     return Len; }
 
    int PrintFlight(char *Out, uint32_t Time=0) const // type #2 = Flight status
    { int Len=0;
@@ -188,8 +236,8 @@ class ADSL_Packet
    int Print(char *Out) const
    { Out[0]=0;
      if(Type==0x02)
-       return sprintf(Out, "%02X:%06X %4.1fs [%+09.5f,%+010.5f]deg %dm %+4.1fm/s %05.1fdeg %3.1fm/s",
-         getAddrTable(), getAddress(), 0.25*TimeStamp, FNTtoFloat(getLat()), FNTtoFloat(getLon()),
+       return sprintf(Out, "%02X:%06X R%d %4.1fs [%+09.5f,%+010.5f]deg %dm %+4.1fm/s %05.1fdeg %3.1fm/s",
+         getAddrTable(), getAddress(), isRelay(), 0.25*TimeStamp, FNTtoFloat(getLat()), FNTtoFloat(getLon()),
          getAlt(), 0.125*getClimb(), (45.0/0x40)*getTrack(), 0.25*getSpeed());
      if(Type==0x42)
      { int Len=0;
@@ -200,11 +248,13 @@ class ADSL_Packet
        { Len=sprintf(Out, "%02X:%06X ", getAddrTable(), getAddress() );
          Len+=PrintInfo(Out+Len); }
        else if(Telemetry.Header.TelemType==2)
-       { int Len=sprintf(Out, "%02X:%06X ", getAddrTable(), getAddress() );
+       { Len=sprintf(Out, "%02X:%06X ", getAddrTable(), getAddress() );
          Len+=PrintFlight(Out+Len); }
        else
-       { Len+=sprintf(Out, "%02X:%06X %d:%02X (telemetry/diagnostic)",
-                getAddrTable(), getAddress(), Telemetry.Header.TelemType, Telemetry.Header.TimeStamp); }
+       { Len=sprintf(Out, "%02X:%06X ", getAddrTable(), getAddress() );
+         // Len+=sprintf(Out, "%02X:%06X %d:%02X (telemetry/diagnostic)",
+         //        getAddrTable(), getAddress(), Telemetry.Header.TelemType, Telemetry.Header.TimeStamp); }
+         Len+=PrintGNSS(Out+Len); }
        return Len; }
      return 0; }
 
