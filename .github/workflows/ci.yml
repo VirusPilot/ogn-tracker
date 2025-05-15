@@ -29,7 +29,7 @@ jobs:
 
     - name: Build project
       run: |
-        platformio run -e ttgo-sx1276-tbeam-07
+        #platformio run -e ttgo-sx1276-tbeam-07
         platformio run -e ttgo-sx1276-tbeam-v10
         platformio run -e ttgo-sx1262-tbeam-v10
         platformio run -e ttgo-sx1276-tbeam-v12
@@ -40,7 +40,7 @@ jobs:
       with:
         name: ogn-tracker
         path: |
-         .pio/build/ttgo-sx1276-tbeam-07/*.bin
+         #.pio/build/ttgo-sx1276-tbeam-07/*.bin
          .pio/build/ttgo-sx1276-tbeam-v10/*.bin
          .pio/build/ttgo-sx1262-tbeam-v10/*.bin
          .pio/build/ttgo-sx1276-tbeam-v12/*.bin
