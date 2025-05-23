@@ -209,6 +209,30 @@ static void TFT_BL_Init(void)
 
 static void TFT_BL(uint8_t Lev) { ledcWrite(TFT_BL_Chan, Lev); }
 
+static void TFT_DrawBatt(uint16_t X, uint16_t Y, uint16_t CellSize,
+                         uint16_t Cells, uint16_t Full,
+                         uint16_t CellColor, uint16_t FrameColor)
+{ TFT.drawRect(X, Y, CellSize+4, (CellSize+1)*Cells+3, FrameColor);   // draw the main box
+  TFT.drawRect(X+2, Y-4, CellSize, 4, FrameColor);                    // draw the tip
+  if(Full>Cells) Full=Cells;
+  for(uint16_t Cell=0; Cell<Full; Cell++)
+  { TFT.fillRect(X+2, Y+(Cells-1-Cell)*(CellSize+1)+2, CellSize, CellSize, CellColor); }
+}
+
+
+static void TFT_DrawBatt(uint16_t X, uint16_t Y)
+{  int16_t BattVolt=(BatteryVoltage+128)>>8; // [mV] measured and averaged  battery voltage
+  uint16_t Cells=5;
+   int16_t Full=(BattVolt-3300+80)/160; if(Full<0) Full=0;
+  uint16_t CellColor=ST77XX_GREEN;
+  uint16_t FrameColor=ST77XX_WHITE;
+  if(Full<=2) { CellColor=ST77XX_YELLOW; }
+  if(Full<=1) { CellColor=FrameColor=ST77XX_RED; }
+  static uint8_t Flip=0;
+  if(BatteryVoltageRate>0x10 && Flip&1) Full++;
+  TFT_DrawBatt(X, Y, 8, Cells, Full, CellColor, FrameColor);
+  Flip++; }
+
 static void TFT_DrawID(bool WithAP=0)
 { char Line[128];
   TFT.fillScreen(ST77XX_DARKBLUE);
@@ -227,14 +251,19 @@ static void TFT_DrawID(bool WithAP=0)
     TFT.print(Line); Vert+=14; }
   if(Parameters.Pilot[0])
   { TFT.setCursor(2, Vert);
-    sprintf(Line, "Plt: %s", Parameters.Pilot);
+    sprintf(Line, "Plt:%s", Parameters.Pilot);
     TFT.print(Line); Vert+=14; }
 #ifdef WITH_AP
   if(WithAP)
   { TFT.setCursor(2, Vert);
-    sprintf(Line, "AP: %s", Parameters.APname);
+    sprintf(Line, "AP:%s", Parameters.APname);
     TFT.print(Line); Vert+=14; }
 #endif
+  if(Vert<60)
+  { TFT.setCursor(2, Vert);
+    sprintf(Line, "Bat:%5.3fV", (0.001/256)*BatteryVoltage);
+    TFT.print(Line); Vert+=14; }
+
   uint64_t ID=getUniqueID();
   uint8_t Len=Format_String(Line, "#");
   Len+=Format_Hex(Line+Len, (uint16_t)(ID>>32));
@@ -244,7 +273,9 @@ static void TFT_DrawID(bool WithAP=0)
   TFT.setFont(0);
   TFT.setTextSize(1);
   TFT.setCursor(2, 72);
-  TFT.print(Line); }
+  TFT.print(Line);
+
+  TFT_DrawBatt(146, 30); }
 
 static void TFT_DrawSat(void)
 { char Line[32];
@@ -262,7 +293,8 @@ static void TFT_DrawSat(void)
     Line[Len]=0;
     TFT.setCursor(2, Vert); TFT.print(Line);
     Vert+=14; }
-}
+
+  TFT_DrawBatt(146, 30); }
 
 static void TFT_DrawRF(void)
 { char Line[32];
@@ -286,12 +318,12 @@ static void TFT_DrawRF(void)
   // Len+=Format_SignDec(Line+Len, (int32_t)Parameters.RFchipFreqCorr, 2, 1); // frequency correction
   // Len+=Format_String(Line+Len, "ppm");
   Line[Len]=0;
-  TFT.setCursor(2, Vert); TFT.print(Line); Vert+=14;
+  TFT.setCursor(2, Vert); TFT.print(Line); Vert+=16;
 
   sprintf(Line, "Rx: %+4.1fdBm", Radio_BkgRSSI);
   TFT.setCursor(2, Vert); TFT.print(Line); Vert+=16;
   sprintf(Line, "Rx: %d:%d pkt", Radio_RxCount[1], Radio_RxCount[2]);
-  TFT.setCursor(2, Vert); TFT.print(Line); Vert+=14;
+  TFT.setCursor(2, Vert); TFT.print(Line); Vert+=16;
 
   Len=0;
   Len+=Format_String(Line+Len, Radio_FreqPlan.getPlanName());               // name of the frequency plan
@@ -299,7 +331,7 @@ static void TFT_DrawRF(void)
   Len+=Format_UnsDec(Line+Len, (uint32_t)(Radio_FreqPlan.getCenterFreq()/100000), 3, 1); // center frequency
   Len+=Format_String(Line+Len, "M");
   Line[Len]=0;
-  TFT.setCursor(2, Vert); TFT.print(Line); Vert+=14;
+  TFT.setCursor(2, Vert); TFT.print(Line); Vert+=16;
 
 }
 
@@ -310,14 +342,14 @@ static void TFT_DrawBaro(const GPS_Position *GPS)
   TFT.setFont(&FreeMono9pt7b);            // a better fitting font, but it has different vertical alignment
   TFT.setTextSize(1);
 
-  int Vert=16;
+  int Vert=18;
   uint8_t Len=Format_String(Line+Len, "Baro ");
   if(GPS && GPS->hasBaro)
   { Len+=Format_UnsDec(Line+Len, (GPS->Pressure+20)/40, 5, 1);
     Len+=Format_String(Line+Len, "hPa "); }
   else Len+=Format_String(Line+Len, "----.-hPa ");
   Line[Len]=0;
-  TFT.setCursor(2, Vert); TFT.print(Line); Vert+=14;
+  TFT.setCursor(2, Vert); TFT.print(Line); Vert+=16;
 
   Len=0;
   if(GPS && GPS->hasBaro)
@@ -329,7 +361,7 @@ static void TFT_DrawBaro(const GPS_Position *GPS)
   { Len+=Format_String(Line+Len, "----m");
     Len+=Format_String(Line+Len, " --.-m/s "); }
   Line[Len]=0;
-  TFT.setCursor(2, Vert); TFT.print(Line); Vert+=14;
+  TFT.setCursor(2, Vert); TFT.print(Line); Vert+=16;
 
   Len=0;
   if(GPS && GPS->hasBaro)
@@ -341,13 +373,13 @@ static void TFT_DrawBaro(const GPS_Position *GPS)
     Line[Len++]='%'; }
   else Len+=Format_String(Line+Len, "---.-C --.-% ");
   Line[Len]=0;
-  TFT.setCursor(2, Vert); TFT.print(Line); Vert+=14;
+  TFT.setCursor(2, Vert); TFT.print(Line); Vert+=16;
 
   if(GPS && GPS->hasBaro)
   { float Dew = DewPoint(0.1f*GPS->Temperature, 0.1f*GPS->Humidity);
     sprintf(Line, "Dew: %+5.1fC", Dew);
     Line[5]=0xB0;
-    TFT.setCursor(2, Vert); TFT.print(Line); Vert+=14;
+    TFT.setCursor(2, Vert); TFT.print(Line); Vert+=16;
   }
 }
 
@@ -358,7 +390,7 @@ static void TFT_DrawGPS(const GPS_Position *GPS)
   TFT.setFont(&FreeMono9pt7b);            // a better fitting font, but it has different vertical alignment
   TFT.setTextSize(1);
 
-  int Vert=16;
+  int Vert=18;
   uint8_t Len=0;
   strcpy(Line, "--.-- --:--:--");
   if(GPS && GPS->isDateValid())
@@ -369,50 +401,61 @@ static void TFT_DrawGPS(const GPS_Position *GPS)
   { Format_UnsDec (Line+ 6, (uint32_t)GPS->Hour,  2, 0);
     Format_UnsDec (Line+ 9, (uint32_t)GPS->Min,   2, 0);
     Format_UnsDec (Line+12, (uint32_t)GPS->Sec,   2, 0); }
-  TFT.setCursor(2, Vert); TFT.print(Line); Vert+=14;
+  TFT.setCursor(2, Vert); TFT.print(Line); Vert+=16;
 
   Len=0;
-  Len+=Format_String(Line+Len, "Lat: ");
+  // Len+=Format_String(Line+Len, "Lat: ");
+  Line[Len++]=' ';
   if(GPS && GPS->isValid())
   { Len+=Format_SignDec(Line+Len,  GPS->Latitude /6, 7, 5);
-    Line[Len++]=0xB0; }
+    /* Line[Len++]=0xB0; */ }
   else Len+=Format_String(Line+Len, "---.-----");
   Line[Len]=0;
-  TFT.setCursor(2, Vert); TFT.print(Line); Vert+=14;
+  TFT.setCursor(2, Vert); TFT.print(Line);
+  TFT.setCursor(TFT.getCursorX(), Vert-4); TFT.write('o');
+  Vert+=16;
+
   Len=0;
-  Len+=Format_String(Line+Len, "Lon:");
+  // Len+=Format_String(Line+Len, "Lon:");
   if(GPS && GPS->isValid())
   { Len+=Format_SignDec(Line+Len,  GPS->Longitude /6, 8, 5);
-    Line[Len++]=0xB0; }
+    /* Line[Len++]=0xB0; */ }
   else Len+=Format_String(Line+Len, "----.-----");
   Line[Len]=0;
-  TFT.setCursor(2, Vert); TFT.print(Line); Vert+=14;
+  TFT.setCursor(2, Vert); TFT.print(Line);
+  TFT.setCursor(TFT.getCursorX(), Vert-4); TFT.write('o');
+  Vert+=16;
+
   Len=0;
-  Len+=Format_String(Line+Len, "Alt: ");
+  // Len+=Format_String(Line+Len, "Alt: ");
   if(GPS && GPS->isValid())
   { int32_t Alt = GPS->Altitude;
     if(Alt>=0) Line[Len++]=' ';
     Len+=Format_SignDec(Line+Len,  Alt, 1, 1, 1);               // [0.1m]
-    Line[Len++]='m'; Line[Len++]=' ';
   }
-  else Len+=Format_String(Line+Len, "-----.-  ");
+  else Len+=Format_String(Line+Len, "-----.-");
+  Line[Len++]='m'; Line[Len++]=' ';
   Line[Len]=0;
-  TFT.setCursor(2, Vert); TFT.print(Line); Vert+=14; }
+  TFT.setCursor(2, Vert); TFT.print(Line); Vert+=14;
+
+  TFT_DrawBatt(146, 30); }
 
 const  uint8_t  TFT_Pages=5;
 static uint8_t  TFT_Page       = 0;       // page currently on display
 static uint8_t  TFT_PageChange = 0;       // signal the page has been changed
 static uint8_t  TFT_PageOFF    = 0;       // Backlight to be OFF
+#ifdef WITH_TFT_DIM
 static uint32_t TFT_PageActive = 0;       // [ms] last time the page was active (button pressed)
-const  uint32_t TFT_PageTimeout = 30000;  // [ms] timeout to turn off the TFT backlight
+const  uint32_t TFT_PageTimeout = (uint32_t)60000*WITH_TFT_DIM;  // [ms] timeout to turn off the TFT backlight
+#endif
 
 static void TFT_DrawPage(const GPS_Position *GPS)
 { // Serial.printf("TFT_DrawPage() TFT_Page:%d TFT_PageChange:%d\n", TFT_Page, TFT_PageChange);
-  if(TFT_Page==0) return TFT_DrawID();
-  if(TFT_Page==1) return TFT_DrawSat();
-  if(TFT_Page==2) return TFT_DrawRF();
+  if(TFT_Page==1) return TFT_DrawID();
+  if(TFT_Page==2) return TFT_DrawSat();
+  if(TFT_Page==3) return TFT_DrawRF();
   if(!GPS) return TFT_DrawID();
-  if(TFT_Page==3) return TFT_DrawBaro(GPS);
+  if(TFT_Page==4) return TFT_DrawBaro(GPS);
   return TFT_DrawGPS(GPS);
 }
 
@@ -495,9 +538,10 @@ uint16_t BatterySense(int Samples)  // [mV] read battery voltage from power-cont
 #ifdef WITH_AXP
   if(HardwareStatus.AXP192 || HardwareStatus.AXP202) return AXP.getBattVoltage();
 #endif
-// #ifdef ADC_BattSenseEna
-//   digitalWrite(ADC_BattSenseEna, HIGH);
-// #endif
+#ifdef ADC_BattSenseEna
+  digitalWrite(ADC_BattSenseEna, HIGH);
+  delay(1);
+#endif
   uint32_t RawVoltage=0;
   for( int Idx=0; Idx<Samples; Idx++)
   { RawVoltage += adc1_get_raw(ADC_Chan_Batt); }
@@ -509,17 +553,16 @@ uint16_t BatterySense(int Samples)  // [mV] read battery voltage from power-cont
 #else
   Volt = Volt*2;
 #endif
-  
+
 #ifdef BATT_ADC_BIAS
   if(Volt>=BATT_ADC_BIAS) Volt-=BATT_ADC_BIAS;
 #else
   const uint16_t Bias = 50;  // apparently, there is 80mV bias in the battery voltage measurement
   if(Volt>=Bias) Volt-=Bias;
 #endif
-
-// #ifdef ADC_BattSenseEna
-//   digitalWrite(ADC_BattSenseEna, LOW);
-// #endif
+#ifdef ADC_BattSenseEna
+  digitalWrite(ADC_BattSenseEna, LOW);
+#endif
   return Volt; } // [mV]
 
 // =======================================================================================================
@@ -550,9 +593,13 @@ int  CONS_UART_Free(void)
 { return Serial.availableForWrite(); }
 
 int  CONS_UART_Read (uint8_t &Byte)
-{ int Ret=Serial.read(); if(Ret>=0) { Byte=Ret; return 1; }
+{ char Char;
+  int Ret=Serial.read(); if(Ret>=0) { Byte=Ret; return 1; }
 #ifdef WITH_BT4_SPP
   Ret=BT_SPP_Read(Byte); if(Ret>0) { return 1; }
+#endif
+#ifdef WITH_BLE_SPP
+  Ret=BLE_SPP_RxFIFO.Read(Char); if(Ret>0) { Byte=Char; return 1; }
 #endif
 #ifdef WITH_BT_SPP
   Ret=BTserial.read(); if(Ret>=0) { Byte=Ret; return 1; }
@@ -940,7 +987,7 @@ void setup()
 #endif
 
 #ifdef WITH_BLE_SPP
-  if(!StartAP && ameters.BTname[0])
+  if(!StartAP && Parameters.BTname[0])
   { Serial.printf("Start BLE (Arduino) Serial Port: %s\n", Parameters.BTname);
     BLE_SPP_Start(Parameters.BTname); }
 #endif
@@ -1247,6 +1294,9 @@ void loop()
 #ifdef Button_Pin
   Button.loop();
 #endif
+#ifdef WITH_BLE_SPP
+  BLE_SPP_Check();
+#endif
   // if(ProcessInput()==0) vTaskDelay(1);
   while(ProcessInput()>0);
 #ifdef WITH_ST7735
@@ -1259,14 +1309,17 @@ void loop()
     TFT_PageChange=0; }
   if(GPS!=PrevGPS)
   { TFT_PageChange=1;
-    uint32_t Age = millis()-TFT_PageActive;
+#ifdef WITH_TFT_DIM
+    uint32_t msTime = millis();
+    if(BatteryVoltageRate>0x10) TFT_PageActive = msTime;
+    uint32_t Age = msTime-TFT_PageActive;
     TFT_PageOFF = Age>TFT_PageTimeout;
+#else
+    TFT_PageOFF = 0;
+#endif
     if(TFT_PageOFF) TFT_BL(0);
               else  TFT_BL(128);
     PrevGPS=GPS; }
-#endif
-#ifdef WITH_BLE_SPP
-  BLE_SPP_Check();
 #endif
 }
 
