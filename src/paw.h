@@ -61,8 +61,7 @@ class PAW_Packet
        Byte[Idx]=0; }
 
    uint8_t getAddrType(void) const            // get (or guess) address-type
-   { // if(OGN) return AddrType;                 // if OGN-Tracker then AddrType is explicit
-     if(AcftType==0xF) return 3;              // if fixed object then OGN-type
+   { if(AcftType==0xF) return 3;              // if fixed object then OGN-type
      if(Address<0xD00000) return 1;           // ICAO-type
      if(Address<0xE00000) return 2;           // FLARM-type
      return 3; }                              // OGN-type
@@ -144,15 +143,13 @@ class PAW_Packet
       Byte[Len] = (Upp<<4) | Low; Inp+=2; }                          // new byte, count input
     return Len; }                                                    // return number of bytes read = packet length = should be 24
 
-   static void Whiten(uint8_t *Packet, int Len)                       // whitening applied to PAW packet, includes internal CRC
+   void Whiten(void) { Whiten(Byte, Size); }
+
+   static void Whiten(uint8_t *Packet, int Len)                      // whitening applied to PAW packet, includes internal CRC
    { const static uint8_t White[] =
      {  0x05, 0xb4, 0x05, 0xae, 0x14, 0xda, 0xbf, 0x83,
         0xc4, 0x04, 0xb2, 0x04, 0xd6, 0x4d, 0x87, 0xe2,
-        0x01, 0xa3, 0x26, 0xac, 0xbb, 0x63, 0xf1, 0x01,
-        0xca, 0x07, 0xbd, 0xaf, 0x60, 0xc8, 0x12, 0xed,
-        0x04, 0xbc, 0xf6, 0x12, 0x2c, 0x01, 0xd9, 0x04,
-        0xb1, 0xd5, 0x03, 0xab, 0x06, 0xcf, 0x08, 0xe6,
-        0xf2, 0x07, 0xd0, 0x12, 0xc2, 0x09, 0x34, 0x20 };
+        0x01, 0xa3, 0x26, 0xac, 0xbb, 0x63, 0xf1, 0x01 };
      for(int Idx=0; Idx<Len; Idx++)
      { Packet[Idx]^=White[Idx]; }
    }
@@ -220,9 +217,14 @@ class PAW_RxPacket: public PAW_Packet  // Received PilotAware packet
             Seq, 0.25*SNR, 0.5*CSNR, 0.01*FreqOfs); }
 
    int Print(char *Out) const
-   { return sprintf(Out, "%d.%03ds %02X:%06X [%+09.5f, %+010.5f]deg %4dm, %03ddeg %3dkt #%02X %3.1f/%3.1fdB %+4.1fkHz\n",
+   { if(!isADSL())
+       return sprintf(Out, "%d.%03ds %02X:%06X [%+09.5f, %+010.5f]deg %4dm, %03ddeg %3dkt #%02X %3.1f/%3.1fdB %+4.1fkHz\n",
             Time, nsTime/1000000, TypeByte, Address, Latitude, Longitude, Altitude, Heading, Speed,
-            Seq, 0.25*SNR, 0.5*CSNR, 0.01*FreqOfs); }
+            Seq, 0.25*SNR, 0.5*CSNR, 0.01*FreqOfs);
+     ADSL_Packet ADSL; memcpy(&ADSL.Version, Byte, 24); ADSL.Descramble();
+     int Len=ADSL.Print(Out);
+     Len+=sprintf(Out+Len, " %3.1f/%3.1fdB %+4.1fkHz\n", 0.25*SNR, 0.5*CSNR, 0.01*FreqOfs);
+     return Len; }
 
    uint32_t getSlotTime(void) const
    { if(nsTime>=150000000) return Time;
