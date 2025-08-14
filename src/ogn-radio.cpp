@@ -120,7 +120,7 @@ static int Radio_ConfigManchFSK(uint8_t PktLen, bool RxMode, const uint8_t *SYNC
     if(State) ErrState=State; }
 #endif
 #ifdef WITH_SX1262
-  State=Radio.setPreambleLength(RxMode?8:16);                       // [bits] minimal preamble
+  State=Radio.setPreambleLength(RxMode?0:16);                       // [bits] minimal preamble
 #endif
 #ifdef WITH_SX1276
   State=Radio.setPreambleLength(RxMode?8:16);                       // [bits] minimal preamble
@@ -128,13 +128,6 @@ static int Radio_ConfigManchFSK(uint8_t PktLen, bool RxMode, const uint8_t *SYNC
   if(State) ErrState=State;
   State=Radio.setSyncWord((uint8_t *)SYNC, SYNClen);                // SYNC sequence: 8 bytes which is equivalent to 4 bytes before Manchester encoding
   if(State) ErrState=State;
-  // Radio.preambleDetLength = RADIOLIB_SX126X_GFSK_PREAMBLE_DETECT_8;
-// #ifdef WITH_SX1262
-//   // Radio.writeRegister(RADIOLIB_SX126X_REG_SYNC_WORD_0, (uint8_t *)SYNC, SYNClen);
-//   State=Radio.setPacketParamsFSK(16, RADIOLIB_SX126X_GFSK_PREAMBLE_DETECT_8, RADIOLIB_SX126X_GFSK_CRC_OFF, SYNClen*8,
-//     RADIOLIB_SX126X_GFSK_ADDRESS_FILT_OFF, RADIOLIB_SX126X_GFSK_WHITENING_OFF, RADIOLIB_SX126X_GFSK_PACKET_FIXED, PktLen*2);
-//   if(State) ErrState=State;
-// #endif
   State=Radio.setEncoding(RADIOLIB_ENCODING_NRZ);                   //
   if(State) ErrState=State;
   State=Radio.setCRC(0, 0);                                         // disable CRC: we do it ourselves
@@ -302,7 +295,7 @@ static int Radio_TxLDR(const uint8_t *Packet, uint8_t PktSize=24)   // transmit 
 { memcpy(Radio_TxPacket, SYNC_LDR+2, 6);                            // first copy the remaining 6 bytes of the pre-data part
   memcpy(Radio_TxPacket+6, Packet, PktSize);                        // copy packet to the buffer (internal CRC is already set)
   Radio_TxPacket[6+PktSize] = PAW_Packet::CRC8(Radio_TxPacket+6, PktSize); // add external CRC
-  Radio_TxCount[Radio_SysID_LDR]++;
+  // Radio_TxCount[Radio_SysID_LDR]++;                              // this is counted in the Radio_Slot()
   return Radio_TxFSK(Radio_TxPacket, 6+PktSize+1); }                // send the packet out
 
 static int Radio_TxPAW(PAW_Packet &Packet)                          // transmit a PilotAware packet, which could be an ADS-L !
@@ -802,7 +795,9 @@ void Radio_Task(void *Parms)
     xSemaphoreGive(CONS_Mutex); }
 
   for( ; ; )
-  { int PktCount=0;
+  { if(!HardwareStatus.Radio) { delay(1000); continue; }
+
+    int PktCount=0;
     // char Line[120];
 
     // xQueueReceive(Radio_SlotMsg, &TimeRef, 2000);              // wait for "new time slot" from the GPS
@@ -859,8 +854,8 @@ void Radio_Task(void *Parms)
       int Ret=Radio_ConfigLDR();
       Radio_setFrequency(1e-6*FreqPAW);
       Radio_setTxPower(Parameters.TxPower+13);       // we can transmit PAW with higher power
-      Serial.printf("TxPAW: Freq:%7.3fMHz/%ddBm (%d) [%X:%X:%08X]\n",
-               1e-6*FreqPAW, Parameters.TxPower+13, Ret, (int)PAW_TxFIFO.ReadPtr, (int)PAW_TxFIFO.WritePtr, (int)PawPacket);
+      // Serial.printf("TxPAW: Freq:%7.3fMHz/%ddBm (%d) [%X:%X:%08X]\n",
+      //          1e-6*FreqPAW, Parameters.TxPower+13, Ret, (int)PAW_TxFIFO.ReadPtr, (int)PAW_TxFIFO.WritePtr, (int)PawPacket);
       Radio_TxPAW(*PawPacket); }
     if(PawPacket) PAW_TxFIFO.Read();
 #endif
@@ -885,28 +880,29 @@ void Radio_Task(void *Parms)
     Hash *= 48271;
     XorShift32(Hash);
     Hash *= 48271;
-    bool AdslSlot = Count1s(Hash)&1;  // 1:transmit ADS-L in the 1st half, 0:transmit in the 2nd half
-    XorShift32(Hash);
-    Hash *= 48271;
-    bool Oband = EU && (Count1s(Hash)&1); // 1:transmit on O-band, 0:transmit on M-band
 
-     int8_t  TxPwr = Parameters.TxPower;
-     uint8_t TxChan  = Radio_FreqPlan.getChannel(TimeRef.UTC, 0, 1);
     const uint8_t *OGN_Pkt  = OgnPacket1  ? OgnPacket1->Byte()      : 0;
     const uint8_t *ADSL_Pkt = AdslPacket1 ? &(AdslPacket1->Version) : 0;
-
+    int8_t  TxPwr = Parameters.TxPower;
     uint8_t TxProt = Radio_SysID_OGN;
-    const uint8_t *TxPkt = OGN_Pkt;
-    if(AdslSlot && EU)
-    { TxProt = Radio_SysID_ADSL;
-      TxPkt  = ADSL_Pkt; }
     uint8_t RxProt = Radio_SysID_OGN_ADSL;
-
-    if(Oband && AdslSlot)
-    { TxPwr += 13;
-      TxChan = Radio_FreqPlan.Channels;
-      TxProt = Radio_SysID_LDR;
-      RxProt = TxProt; }
+    const uint8_t *TxPkt = 0;
+    bool    Odd=0;
+    uint8_t TxChan=0;
+    uint8_t FLR_Chan  = Radio_FreqPlan.getChannel(TimeRef.UTC, 0, 0);
+    uint8_t OGN_Chan  = Radio_FreqPlan.getChannel(TimeRef.UTC, 0, 1);
+    if(EU)
+    { TxChan = Hash%3;
+           if(TxChan==FLR_Chan) { TxPkt=ADSL_Pkt; TxProt=Radio_SysID_ADSL; RxProt=Radio_SysID_FLR_ADSL; }
+      else if(TxChan==OGN_Chan) { TxPkt=OGN_Pkt; TxProt=Radio_SysID_OGN; RxProt=Radio_SysID_OGN_ADSL; }
+      else           { TxPwr+=13; TxPkt=ADSL_Pkt; TxProt=Radio_SysID_LDR; RxProt=Radio_SysID_LDR; }
+    }
+    else
+    { Odd = Count1s(Hash)&1;
+      TxPwr+=13; TxPkt=OGN_Pkt;
+      if(Odd) { TxChan=FLR_Chan; TxProt=Radio_SysID_OGN; RxProt=Radio_SysID_FLR; }
+         else { TxChan=OGN_Chan; TxProt=Radio_SysID_OGN; RxProt=Radio_SysID_OGN; }
+    }
 
     msTime = millis()-TimeRef.sysTime;                // [ms] time since PPS
     uint32_t SlotLen = 800-msTime;
@@ -931,23 +927,26 @@ void Radio_Task(void *Parms)
       if(RespLeft>0 && RespLeft<1000) SlotLen=RespLeft-40; } // then adjust the time slot to be there in time
 #endif
 
-    TxPwr = Parameters.TxPower;
-    TxChan  = Radio_FreqPlan.getChannel(TimeRef.UTC, 1, 1);
     OGN_Pkt  = OgnPacket2  ? OgnPacket2->Byte()      : 0;
     ADSL_Pkt = AdslPacket2 ? &(AdslPacket2->Version) : 0;
-
+    TxPwr = Parameters.TxPower;
     TxProt = Radio_SysID_OGN;
-    TxPkt = OGN_Pkt;
-    if(!AdslSlot && EU)
-    { TxProt = Radio_SysID_ADSL;
-      TxPkt  = ADSL_Pkt; }
     RxProt = Radio_SysID_OGN_ADSL;
-
-    if(Oband && !AdslSlot)
-    { TxPwr += 13;
-      TxChan = Radio_FreqPlan.Channels;
-      TxProt = Radio_SysID_LDR;
-      RxProt = TxProt; }
+    TxPkt = 0;
+    FLR_Chan  = Radio_FreqPlan.getChannel(TimeRef.UTC, 1, 0);
+    OGN_Chan  = Radio_FreqPlan.getChannel(TimeRef.UTC, 1, 1);
+    if(EU)
+    { if(TxChan==2) TxChan=0;
+           if(TxChan==FLR_Chan) { TxPkt=ADSL_Pkt; TxProt=Radio_SysID_ADSL; RxProt=Radio_SysID_FLR_ADSL; }
+      else if(TxChan==OGN_Chan) { TxPkt=OGN_Pkt; TxProt=Radio_SysID_OGN; RxProt=Radio_SysID_OGN_ADSL; }
+      else           { TxPwr+=13; TxPkt=ADSL_Pkt; TxProt=Radio_SysID_LDR; RxProt=Radio_SysID_LDR; }
+    }
+    else
+    { Odd = !Odd;
+      TxPwr+=13; TxPkt=OGN_Pkt;
+      if(Odd) { TxChan=FLR_Chan; TxProt=Radio_SysID_OGN; RxProt=Radio_SysID_FLR; }
+         else { TxChan=OGN_Chan; TxProt=Radio_SysID_OGN; RxProt=Radio_SysID_OGN; }
+    }
 
          if(SlotLen<250) SlotLen=250;
     else if(SlotLen>480) SlotLen=480;
@@ -1034,16 +1033,19 @@ void Radio_Task(void *Parms)
     Radio_TxCredit+= 10;                                // [ms]
     if(Radio_TxCredit>60000) Radio_TxCredit=60000;
 
+    static uint32_t PktCountSum=0;
+    PktCountSum += PktCount;
     if(TimeRef.UTC%10!=5) continue; // only print every 10sec
     int LineLen=sprintf(Line,
-     "Radio: Tx: %d:%d:%d:%d:%d:%d:%d  Rx: %d:%d:%d:%d:%d:%d:%d  %3.1fdBm %d pkts %3.1f pkt/s %3.1fs %c%c [%d]",
+     "Radio: Tx: %d:%d:%d:%d:%d:%d:%d  Rx: %d:%d:%d:%d:%d:%d:%d  %3.1fdBm %d pkts %3.1f pkt/s %3.1fs [%d]",
        Radio_TxCount[0], Radio_TxCount[1], Radio_TxCount[2], Radio_TxCount[3], Radio_TxCount[4], Radio_TxCount[5], Radio_TxCount[6],
        Radio_RxCount[0], Radio_RxCount[1], Radio_RxCount[2], Radio_RxCount[3], Radio_RxCount[4], Radio_RxCount[5], Radio_RxCount[6],
-       Radio_BkgRSSI, PktCount, Radio_PktRate, 0.001*Radio_TxCredit, AdslSlot?'A':'_', Oband?'O':'_',
+       Radio_BkgRSSI, PktCountSum, Radio_PktRate, 0.001*Radio_TxCredit,
        uxTaskGetStackHighWaterMark(NULL));
              // FNT_TxFIFO.isCorrupt()?'!':'_', FNT_RxFIFO.isCorrupt()?'!':'_',
              // OGN_TxFIFO.isCorrupt()?'!':'_', ADSL_TxFIFO.isCorrupt()?'!':'_',
              // FSK_RxFIFO.isCorrupt()?'!':'_', PAW_TxFIFO.isCorrupt()?'!':'_');
+    PktCountSum=0;
     SysLog_Line(Line, LineLen, 1, 25);
     if(Parameters.Verbose && xSemaphoreTake(CONS_Mutex, 20))
     { Serial.println(Line);

@@ -48,8 +48,16 @@
 #include <axp20x.h>
 #endif
 
-#ifdef Button_Pin
+#ifdef WITH_RTC
+#include "driver/rtc_io.h"
+#include "soc/rtc.h"
+#endif
+
+#ifdef WITH_SLEEP
 #include <esp_sleep.h>
+#endif
+
+#ifdef Button_Pin
 #include "Button2.h"
 #endif
 
@@ -194,7 +202,7 @@ static void Vext_ON(bool ON=1) { digitalWrite(Vext_PinEna, ON); }
 
 #ifdef WITH_ST7735
 
-const  uint8_t  TFT_Pages      = 7;       // six LCD pages
+const  uint8_t  TFT_Pages      = 8;       // six LCD pages
 static uint8_t  TFT_Page       = 0;       // page currently on display
 static uint8_t  TFT_PageChange = 0;       // signal the page has been changed
 static uint8_t  TFT_PageOFF    = 0;       // Backlight to be OFF
@@ -214,65 +222,13 @@ static int TFT_DrawPage(const GPS_Position *GPS)
   if(TFT_Page==2) return TFT_DrawSat();
   if(TFT_Page==3) return TFT_DrawRF();
   if(TFT_Page==4) return TFT_DrawRFcounts();
+  if(TFT_Page==5) return TFT_DrawLookout();
   if(!GPS) return TFT_DrawID();
-  if(TFT_Page==5) return TFT_DrawBaro(GPS);
-  if(TFT_Page==6) return TFT_DrawLoRaWAN(GPS);
+  if(TFT_Page==6) return TFT_DrawBaro(GPS);
+  if(TFT_Page==7) return TFT_DrawLoRaWAN(GPS);
   return TFT_DrawGPS(GPS);
   return 0; }
 
-#endif
-
-// =======================================================================================================
-
-#ifdef Button_Pin
-static Button2 Button(Button_Pin);
-static bool Button_isPressed(void) { return digitalRead(Button_Pin)==0; }
-
-static void Button_Single(Button2 Butt)
-{
-#ifdef WITH_ST7735
-  if(TFT_PageOFF)
-    TFT_PageOFF=0;
-  else
-    TFT_NextPage();
-  TFT_PageActive=millis();
-#endif
-}
-
-static void Button_Double(Button2 Butt) { }
-
-static void Button_Long(Button2 Butt)
-{
-#ifdef WITH_ST7735
-  TFT.fillScreen(ST77XX_DARKBLUE);
-  TFT.setTextColor(ST77XX_WHITE);
-  TFT.setFont(0);
-  TFT.setTextSize(2);
-  TFT.setCursor(32, 32);
-  TFT.print("Power-OFF");
-  delay(200);
-  TFT_BL(64);
-  delay(50);
-  TFT_BL(32);
-  delay(50);
-  TFT_BL(16);
-  delay(50);
-#endif
-#ifdef WITH_SLEEP
-  Parameters.PowerON=0;
-  Parameters.WriteToNVS();
-  PowerMode=0;
-  Vext_ON(0);
-  esp_deep_sleep_start();
-#endif
-}
-
-static void Button_Init(void)
-{ pinMode(Button_Pin, INPUT);
-  Button.setLongClickTime(2000);
-  Button.setClickHandler(Button_Single);
-  Button.setDoubleClickHandler(Button_Double);
-  Button.setLongClickDetectedHandler(Button_Long); }
 #endif
 
 // =======================================================================================================
@@ -339,6 +295,62 @@ uint16_t BatterySense(int Samples)  // [mV] read battery voltage from power-cont
   digitalWrite(ADC_BattSenseEna, LOW);
 #endif
   return Volt; } // [mV]
+
+// =======================================================================================================
+
+#ifdef Button_Pin
+static Button2 Button(Button_Pin);
+static bool Button_isPressed(void) { return digitalRead(Button_Pin)==0; }
+
+static void Button_Single(Button2 Butt)
+{
+#ifdef WITH_ST7735
+  if(TFT_PageOFF)
+    TFT_PageOFF=0;
+  else
+    TFT_NextPage();
+  TFT_PageActive=millis();
+#endif
+}
+
+static void Button_Double(Button2 Butt) { }
+
+static void Button_Long(Button2 Butt)
+{
+#ifdef WITH_ST7735
+  TFT.fillScreen(ST77XX_DARKBLUE);
+  TFT.setTextColor(ST77XX_WHITE);
+  TFT.setFont(0);
+  TFT.setTextSize(2);
+  TFT.setCursor(32, 32);
+  TFT.print("Power-OFF");
+  delay(200);
+  TFT_BL(64);
+  delay(50);
+  TFT_BL(32);
+  delay(50);
+  TFT_BL(16);
+  delay(50);
+#endif
+#ifdef WITH_SLEEP
+  Parameters.PowerON=0;
+  Parameters.WriteToNVS();
+  PowerMode=0;
+  Vext_ON(0);
+#ifdef ADC_BattSenseEna
+  BatterySenseEnable(0);
+#endif
+  esp_deep_sleep_start();
+#endif // WITH_SLEEP
+}
+
+static void Button_Init(void)
+{ pinMode(Button_Pin, INPUT);
+  Button.setLongClickTime(2000);
+  Button.setClickHandler(Button_Single);
+  Button.setDoubleClickHandler(Button_Double);
+  Button.setLongClickDetectedHandler(Button_Long); }
+#endif // Button_Pin
 
 // =======================================================================================================
 
@@ -552,6 +564,20 @@ void setup()
   GPS_UART_Init();
 
   Serial.printf("OGN-Tracker: Hard:%s Soft:%s\n", Parameters.Hard, Parameters.Soft);
+
+#ifdef WITH_RTC
+  rtc_slow_freq_t RTCfreq = rtc_clk_slow_freq_get();   // check if 32.768kHz XTAL is used by RTC ?
+  if(RTCfreq!=RTC_SLOW_FREQ_32K_XTAL)                  // if not then attempt to configure it
+  { rtc_clk_32k_enable(true);
+    Serial.println("RTC: attempt to configure 32.768kHz XTAL");
+    delay(1000);
+    rtc_clk_slow_freq_set(RTC_SLOW_FREQ_32K_XTAL);
+    RTCfreq = rtc_clk_slow_freq_get(); }
+       if(RTCfreq==RTC_SLOW_FREQ_32K_XTAL) Serial.println("RTC: 32.768kHz XTAL");
+  else if(RTCfreq==RTC_SLOW_FREQ_8MD256) Serial.println("RTC: 8MHz/256 XTAL");
+  else if(RTCfreq==RTC_SLOW_FREQ_RTC) Serial.println("RTC: 150kHz RC");
+  else Serial.println("RTC: unknown source");
+#endif
 
 #ifdef BOARD_HAS_PSRAM
   if(psramFound()) Serial.printf("PSRAM:%d/%dkB ", ESP.getFreePsram()>>10, ESP.getPsramSize()>>10);
